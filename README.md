@@ -1,100 +1,110 @@
-# Exploring Unsupervised Anomaly Detection Techniques on MVTec AD (Pill Dataset)
+# Unsupervised Anomaly Detection on MVTec AD (Pill Category)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-red)](https://pytorch.org/)
+Four unsupervised approaches to industrial defect detection, implemented from scratch and
+benchmarked on the same data split — from a pixel-space autoencoder baseline up to a
+PatchCore-style memory bank.
 
-## Overview
+![Python](https://img.shields.io/badge/python-3.8%2B-blue)
+![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-red)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-This repository is a **personal learning project** where I explore and implement various **unsupervised anomaly detection** techniques on the **MVTec AD dataset**, focusing on the **Pill** category.
+## Problem
 
-The goal is to experiment with different approaches for detecting defects in industrial images (e.g., cracks, contamination, color faults) using only normal ("good") samples for training. All methods follow the unsupervised paradigm: anomalies are detected based on deviation from the learned normal pattern.
+In industrial quality control, defective samples are rare and their failure modes are open-ended,
+so collecting a labelled defect dataset is impractical. The unsupervised framing sidesteps this:
+train only on *known-good* parts, learn what "normal" looks like, and score test images by how far
+they deviate from it.
 
-This project is part of my ongoing learning process in computer vision and anomaly detection — a space to try new ideas, compare methods, and deepen understanding.
+This project applies that framing to the **Pill** category of
+[MVTec AD](https://www.mvtec.com/company/research/datasets/mvtec-ad), where defects include cracks,
+contamination, colour faults, and print errors.
 
-## Techniques Explored
+## Approaches implemented
 
-I implemented and compared the following approaches:
+| # | Method | Anomaly score |
+|---|--------|---------------|
+| 1 | Convolutional autoencoder | Pixel-level L2 reconstruction error |
+| 2 | ResNet50 deep-feature reconstruction | Reconstruction error in feature space |
+| 3 | Global KNN on ResNet50 embeddings | Distance to nearest normal embedding |
+| 4 | Patch-based KNN (PatchCore-style) | Max/aggregated patch distance to memory bank |
 
-1. **Simple Convolutional Autoencoder**
-   - Classic reconstruction-based method.
-   - A convolutional encoder-decoder is trained on normal images.
-   - Anomaly score: Pixel-level L2 (MSE) reconstruction error.
-   - Serves as a simple, interpretable baseline.
+**1. Convolutional autoencoder.** An encoder-decoder trained on good images only. Anomalies are
+assumed to reconstruct poorly because the decoder has never learned to represent them. Simple and
+interpretable, and it doubles as the baseline everything else is measured against.
 
-2. **Transfer Learning with ResNet50 + Deep Feature Reconstruction**
-   - Inspired by the paper: *"Unsupervised Anomaly Segmentation via Deep Feature Reconstruction"* (Yang et al., Neurocomputing 2021, arXiv:2012.07122).
-   - Extract multi-scale features from intermediate layers of a pretrained ResNet50 (e.g., layer2 and layer3 outputs).
-   - Train a lightweight convolutional autoencoder to reconstruct these deep features (concatenated).
-   - Anomaly score: Reconstruction error in feature space — often better for subtle anomalies than pixel-level reconstruction.
+**2. ResNet50 + deep feature reconstruction.** Rather than reconstructing pixels, extract
+multi-scale activations from intermediate ResNet50 layers (`layer2`, `layer3`) and train a light
+autoencoder to reconstruct those. Following
+[Yang et al., *Unsupervised Anomaly Segmentation via Deep Feature Reconstruction*](https://arxiv.org/abs/2012.07122)
+(Neurocomputing 2021). Feature space is less sensitive to nuisance pixel variation, which matters
+for subtle defects.
 
-3. **KNN-based Anomaly Detection (Global / Image-Level)**
-   - Extract global deep features from pretrained ResNet50 (e.g., average-pooled output).
-   - Build a memory bank of feature vectors from normal training images.
-   - Use K-Nearest Neighbors (KNN) distance to the closest normal features as the anomaly score.
-   - Fast and effective for image-level detection.
+**3. Global KNN.** Average-pool ResNet50 features into one vector per image, store the training
+vectors as a memory bank, and score a test image by its KNN distance to that bank. Cheap, no
+training — but a single global vector dilutes small localised defects, which shows in the results.
 
-4. **Patch-based KNN (Inspired by PatchCore)**
-   - Based on *"Towards Total Recall in Industrial Anomaly Detection"* (Roth et al., CVPR 2022) — **PatchCore** by Amazon Science.
-   - Extract patch-level features from intermediate ResNet50 layers.
-   - Construct a compact memory bank of normal patches (using coreset subsampling for efficiency).
-   - For test images, compare each patch to its nearest neighbors in the memory bank.
-   - Anomaly score/map: Maximum or aggregated patch distances — enables precise anomaly localization.
+**4. Patch-based KNN.** The PatchCore idea from
+[Roth et al., *Towards Total Recall in Industrial Anomaly Detection*](https://arxiv.org/abs/2106.08265)
+(CVPR 2022): keep patch-level features instead of one global vector, subsample them into a compact
+coreset, and score each test patch against its nearest neighbours. Recovers the spatial precision
+that approach 3 loses and yields a usable anomaly heatmap.
 
-## Dataset
+## Results
 
-- **MVTec AD - Pill Category**: Real-world industrial pill images.
-  - Train: Only good/normal pills.
-  - Test: Mix of good and defective pills (crack, color faults, contamination, etc.).
-  - Download link provided in the notebook (or from official MVTec site).
+Image-level AUROC on the MVTec AD Pill test split (good vs. all defect types):
 
-## Requirements
+| Method | AUROC |
+|--------|------:|
+| Convolutional autoencoder | 0.817 |
+| **ResNet50 deep feature reconstruction** | **0.943** |
+| Global KNN | 0.685 |
+| Patch-based KNN (PatchCore-style) | 0.923 |
 
-```bash
-pip install torch torchvision numpy matplotlib tqdm pillow scikit-learn faiss-gpu  # faiss for efficient KNN
+Reading the numbers:
+
+- **Pretrained features beat pixels.** The two methods built on ResNet50 features and spatial
+  structure (0.943, 0.923) clearly outperform the pixel-space autoencoder (0.817).
+- **Global pooling is the weak link.** Global KNN is the *worst* performer here (0.685), below even
+  the plain autoencoder. Average-pooling the whole image into one vector washes out exactly the
+  small, localised defects this dataset is made of — the same backbone used patch-wise scores 0.923.
+- **Deep feature reconstruction edges out patch KNN** on image-level AUROC, though patch KNN gives
+  noticeably better defect *localisation* in the heatmaps, which image-level AUROC does not capture.
+
+These are single-run numbers on one category, without seed averaging or hyperparameter search, so
+treat the ordering as indicative rather than a benchmark result.
+
+## Repository structure
+
+```
+notebook.ipynb      Full implementation — all four methods, training and evaluation
+notebook.pdf        Rendered notebook with all figures (readable without running anything)
+notebook.tex        LaTeX export
+notebook_files/     Figures: reconstructions, anomaly heatmaps, ROC curves
 ```
 
-## Usage
+## Running it
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/yourusername/mvtec-ad-anomaly-exploration.git
-   cd mvtec-ad-anomaly-exploration
-   ```
+The notebook was developed in Google Colab and expects a GPU.
 
-2. Open the Jupyter notebook(s) in Google Colab (recommended for GPU) or locally.
+```bash
+pip install torch torchvision numpy matplotlib tqdm pillow scikit-learn
+```
 
-3. Run the cells sequentially:
-   - Download and extract the dataset.
-   - Implement/train each method.
-   - Evaluate on the test set (image-level AUROC, pixel-level metrics where applicable).
-   - Visualize reconstructions, anomaly heatmaps, and detections.
+```bash
+git clone https://github.com/M3nnoun/vision-anomaly-detection.git
+cd vision-anomaly-detection
+jupyter notebook notebook.ipynb
+```
 
-## Results & Learnings
-
-- **Simple Autoencoder**: Easy to implement, good baseline, but struggles with very subtle defects.
-- **Deep Feature Reconstruction**: Improved sensitivity and localization thanks to richer ResNet features.
-- **Global KNN**: Quick image-level scoring with strong performance.
-- **PatchCore-style**: Best localization, memory-efficient, close to state-of-the-art on MVTec AD.
-
-Experimenting with these methods helped me understand the progression from basic reconstruction to modern memory-bank approaches.
+The first cells download and extract the MVTec AD Pill category; the rest run top to bottom.
+If you only want to read the results, `notebook.pdf` has every figure already rendered.
 
 ## References
 
-- Simple Autoencoder: Classic reconstruction-based anomaly detection.
-- Deep Feature Reconstruction: [arXiv:2012.07122](https://arxiv.org/abs/2012.07122)
-- PatchCore: [arXiv:2106.08265](https://arxiv.org/abs/2106.08265)  
-  Official implementation: https://github.com/amazon-science/patchcore-inspection
+- Yang et al., *Unsupervised Anomaly Segmentation via Deep Feature Reconstruction* — [arXiv:2012.07122](https://arxiv.org/abs/2012.07122)
+- Roth et al., *Towards Total Recall in Industrial Anomaly Detection* (PatchCore) — [arXiv:2106.08265](https://arxiv.org/abs/2106.08265) · [official implementation](https://github.com/amazon-science/patchcore-inspection)
+- Bergmann et al., *MVTec AD — A Comprehensive Real-World Dataset for Unsupervised Anomaly Detection* (CVPR 2019)
 
 ## License
 
-MIT License — feel free to fork, modify, and experiment!
-
-## About
-
-This is purely a learning and exploration project. I'm sharing it to document my progress and hopefully help others on the same journey.
-
-Feedback, suggestions, or questions are very welcome! If you're interested in anomaly detection, computer vision, or industrial AI, let's connect.
-
-Star ⭐ the repo if you found it useful! 🚀
-
+MIT
